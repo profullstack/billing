@@ -7,6 +7,7 @@
 // attachment and prints to PDF from any browser.
 import { formatMoney, toMajor } from "./money.mjs";
 import { effectiveStatus } from "./invoices.mjs";
+import { formatPayee } from "./fields.mjs";
 
 const escapeHtml = (text) => String(text ?? "")
   .replace(/&/g, "&amp;")
@@ -52,6 +53,13 @@ export function model(invoice, { business, client, now = new Date() } = {}) {
       email: client?.email || "",
       address: client?.address || "",
     },
+    // Where this invoice settles. Carried in the rendered model rather than
+    // only in the ledger because a payment rail is the thing that needs it, and
+    // `invoice render --format json` is how an outside rail asks. An invoice
+    // with no payee renders fine and settles nowhere, which is the correct
+    // refusal: money must not go to an address nobody chose.
+    payee: client?.payee || null,
+    payeeText: formatPayee(client?.payee),
     items: invoice.items.map((i) => ({
       description: i.description,
       quantity: i.quantity,

@@ -5,6 +5,7 @@
 // filters. Ids exist so a rename does not orphan the invoices.
 import { newId } from "./store.mjs";
 import { parseRate } from "./rates.mjs";
+import { parsePayee } from "./fields.mjs";
 
 export function makeClient({
   name,
@@ -17,6 +18,8 @@ export function makeClient({
   terms = null,
   projects = [],
   notes = "",
+  fields = {},
+  payee = null,
 }) {
   const handle = normalizeHandle(name);
   if (!handle) throw new Error("a client needs a name");
@@ -32,6 +35,16 @@ export function makeClient({
     terms: terms == null ? null : Number(terms),
     projects: normalizeProjects(projects),
     notes: String(notes || ""),
+    // Anything the comma form or a dotted flag put on the record. Deliberately
+    // unschema'd: a business keeps the fields it keeps, and refusing
+    // `--billing.po` because nobody predicted it is how a migration turns
+    // lossy. See src/fields.mjs.
+    fields: fields && typeof fields === "object" ? fields : {},
+    // Where this client's payments land - our receiving address for this
+    // relationship. Kept beside the client rather than with the rail, because
+    // it is a fact about the engagement and outlives whichever gateway is
+    // wired up this month.
+    payee: payee ? parsePayee(typeof payee === "string" ? payee : `${payee.chain}:${payee.address}`) : null,
     archived: false,
   };
 }

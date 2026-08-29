@@ -391,3 +391,81 @@ test("config reports both files it depends on", (t) => {
   assert.equal(res.data.dataFile, s.file);
   assert.equal(res.data.timesheetExists, false);
 });
+
+test("a client can be pasted out of a signature", (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  seeded(s);
+  const added = json(["client", "add", '"Globex Inc", https://globex.com, +1-555-0100'], s).data.add;
+  assert.equal(added.name, "globex-inc");
+  assert.equal(added.displayName, "Globex Inc");
+  assert.equal(added.fields.url, "https://globex.com");
+  assert.equal(added.fields.phone, "+1-555-0100");
+});
+
+test("any dotted flag sets that path, with no field list to be missing from", (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  seeded(s);
+  json(["client", "add", "globex"], s);
+  const set = json(["client", "set", "globex", "--contact.telephone", "+1-555-0200", "--billing.po", "PO-42"], s).data.set;
+  assert.equal(set.fields.contact.telephone, "+1-555-0200");
+  assert.equal(set.fields.billing.po, "PO-42");
+});
+
+test("setting one field does not drop the others", (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  seeded(s);
+  json(["client", "add", "globex", "--contact.name", "Jane"], s);
+  const set = json(["client", "set", "globex", "--billing.po", "PO-42"], s).data.set;
+  assert.equal(set.fields.contact.name, "Jane", "the earlier field survived");
+  assert.equal(set.fields.billing.po, "PO-42");
+});
+
+test("a dotted flag cannot reach Object.prototype", (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  seeded(s);
+  const res = json(["client", "add", "globex", "--__proto__.polluted", "yes"], s);
+  assert.equal(res.code, 0);
+  assert.equal(res.data.add.fields.polluted, undefined);
+});
+
+test("an undotted unknown flag is still an error", (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  seeded(s);
+  // Freeform fields must not turn every typo into a silently accepted field.
+  const res = cli(["client", "add", "globex", "--bogus", "x"], s);
+  assert.equal(res.code, 2);
+  assert.match(res.stderr, /unknown flag --bogus/);
+});
+
+test("a payee is recorded, and never guessed", (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  seeded(s);
+  json(["client", "add", "globex"], s);
+  assert.equal(json(["client", "show", "globex"], s).data.client.payee, null);
+
+  const set = json(["client", "payee", "globex", "solana:9xQeAbc"], s).data.payee;
+  assert.deepEqual(set.payee, { chain: "solana", address: "9xQeAbc" });
+
+  // Refusing beats clearing: a typo must not silently unset where money goes.
+  const cleared = cli(["client", "payee", "globex"], s);
+  assert.equal(cleared.code, 2);
+  assert.deepEqual(json(["client", "show", "globex"], s).data.client.payee, { chain: "solana", address: "9xQeAbc" });
+});
+
+test("the rendered invoice carries the payee, so a rail can settle it", (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  seeded(s);
+  json(["client", "add", "globex", "--rate", "150"], s);
+  json(["client", "payee", "globex", "solana:9xQeAbc"], s);
+  const inv = json(["invoice", "new", "--client", "globex", "--item", "work|1|100"], s).data.created;
+  const rendered = JSON.parse(cli(["invoice", "render", inv.number, "--format", "json"], s).stdout);
+  assert.equal(rendered.payeeText, "solana:9xQeAbc");
+  assert.deepEqual(rendered.payee, { chain: "solana", address: "9xQeAbc" });
+});
