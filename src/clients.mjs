@@ -4,7 +4,7 @@
 // handle is what you type on every command and what appears in `--project`
 // filters. Ids exist so a rename does not orphan the invoices.
 import { newId } from "./store.mjs";
-import { parseMoney } from "./money.mjs";
+import { parseRate } from "./rates.mjs";
 
 export function makeClient({
   name,
@@ -26,7 +26,7 @@ export function makeClient({
     displayName: displayName || String(name),
     email: String(email || ""),
     address: String(address || ""),
-    rate: rate == null ? null : Number(rate),
+    rate: rate == null ? null : coerceRate(rate, currency ? String(currency).toUpperCase() : "USD"),
     currency: currency ? String(currency).toUpperCase() : null,
     taxRate: taxRate == null ? null : Number(taxRate),
     terms: terms == null ? null : Number(terms),
@@ -65,13 +65,32 @@ export function projectsFor(client) {
   return client.projects.length ? client.projects : [client.name];
 }
 
+/**
+ * Read a rate however it was written.
+ *
+ * Three spellings reach this: a full sentence ("$100/hour/agent/upto:4"), a
+ * bare number from `--rate 150`, and an already-parsed object read back off
+ * disk. A bare number is an hourly rate in the client's currency, which is what
+ * somebody typing `--rate 150` means every time.
+ */
+export function coerceRate(value, currency = "USD") {
+  if (value == null || value === "") return null;
+  if (typeof value === "object") return value.minor != null ? value : null;
+  const text = String(value).trim();
+  const spec = /^[0-9.]+$/.test(text) ? `${text} ${currency}/hour` : text;
+  return parseRate(spec);
+}
+
 /** Terms resolve client → business → the built-in 14 days. */
 export function resolve(client, business) {
   const currency = client.currency || business.currency || "USD";
   const rateSource = client.rate != null ? client.rate : business.rate;
+  const rate = coerceRate(rateSource, currency);
   return {
-    currency,
-    rate: rateSource == null ? null : parseMoney(rateSource, currency),
+    // The rate carries its own currency, and it wins: a client billed
+    // "0.5 SOL/day" is invoiced in SOL whatever the default says.
+    currency: rate?.currency || currency,
+    rate,
     taxRate: client.taxRate != null ? client.taxRate : (business.taxRate || 0),
     terms: client.terms != null ? client.terms : (business.terms ?? 14),
   };

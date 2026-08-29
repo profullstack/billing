@@ -17,8 +17,9 @@ Node 20.11 or newer. No runtime dependencies.
 ## The loop
 
 ```sh
-billing init --name "Your Company" --email you@example.com --rate 150 --terms 14
-billing client add acme --display "Acme Corp" --email ap@acme.com --rate 175
+billing init --name "Your Company" --email you@example.com --terms 14
+billing client add acme --display "Acme Corp" --email ap@acme.com
+billing rate set acme '$100/hour/agent/upto:4' 
 
 timer start acme fix the login redirect     # ... work happens ...
 timer stop
@@ -40,6 +41,7 @@ as an email attachment, and in print.
 | --- | --- |
 | `init` | Set the business on the invoices. Only the fields you pass change |
 | `client add\|list\|show\|set\|rm\|archive` | Who you bill, and on what terms |
+| `rate set\|list\|show\|rm` | What your time costs, in the words of the contract |
 | `hours --client <c>` | Tracked hours not yet on an invoice |
 | `invoice new` | Create one, from tracked time or from `--item` lines |
 | `invoice list` | Filter by `--client`, `--status`, `--overdue`, a window |
@@ -49,6 +51,7 @@ as an email attachment, and in print.
 | `invoice edit <n>` | Add or remove line items, change tax, terms, notes |
 | `invoice rm <n>` | Delete a draft (`--force` for anything else) |
 | `report` | Billed, collected, outstanding, overdue, by client |
+| `import` | Bring across a ledger that started inside moshcode |
 | `config` | Where the ledger and the timesheet live |
 
 `billing help <command>` prints the flags and examples for one command.
@@ -82,6 +85,55 @@ at different rates stay two lines, because collapsing them would invent a
 blended rate that appears nowhere in the record and that the client cannot
 check. An entry's own rate (`timer start acme --rate 200`) always beats the
 client's.
+
+## Rates
+
+A rate is the sentence from the contract, parsed:
+
+```sh
+billing rate set default '$150/hour'
+billing rate set acme    '$100/hour/agent/upto:4'
+billing rate set beta    '0.5 SOL/day' --prefer SOL --accept fiat
+billing rate set gamma   '$5000/project'
+```
+
+One line carrying four decisions: the price, the period it is charged for, the
+thing that gets multiplied, and the point past which you stop charging.
+`$100/hour/agent/upto:4` means four agents cost four hundred an hour, and so do
+six. Order does not matter after the price, because nobody remembers an order
+they were never told.
+
+- **Periods**: `hour`, `day` (8h), `week` (40h), `month` (160h), `project`, `task`
+- **Units**: `agent`, `seat`, `person`, `team`, or flat when you omit it
+- **`upto:N`** caps the multiplier, **`min:N`** sets a minimum billed period
+
+`default` is a real target: a solo shop has one number everybody pays, and a
+per-client rate is what happens the first time somebody negotiates.
+
+### Agent-hours
+
+When a rate is priced per agent, the invoice bills **agent-hours**, because that
+is arithmetic a client can check:
+
+```
+auth refactor    14 agent-hours @ $100.00    $1,400.00
+```
+
+Three hours with two agents plus two hours with six (capped at four) is 14
+agent-hours. Each entry is charged on its own and the units are then summed,
+never the other way round: averaging the agent count would bill a two-agent
+afternoon at the four-agent rate.
+
+`quantity x unitPrice` always reproduces the line amount exactly. That property
+is worth the one rounding it costs.
+
+### Settlement is not the price
+
+`--prefer SOL --accept fiat` records how you would like to be paid. It is
+deliberately separate from the rate: the number in the contract does not change
+because the rail did. A price given in a ticker (`0.5 SOL/day`, `250 USDC/task`)
+invoices in that ticker, carried to 8 decimal places and printed as a quantity
+rather than run through a currency formatter that would render "USDC 250.00".
 
 ## Fixed line items
 
@@ -135,6 +187,21 @@ billing invoice new --client acme --from-timer --month --dry-run --json
 ```
 
 More in [AGENTS.md](AGENTS.md).
+
+## Coming from moshcode
+
+moshcode used to keep this layer internally, in `~/.moshcode/business.json` and
+`~/.moshcode/timers.json`. Bring it across:
+
+```sh
+billing import              # shows the plan, writes nothing
+billing import --apply
+```
+
+Clients, rates, invoices and the tracked entries all come over, and the agent
+count survives. A client that already exists here is left alone rather than
+merged, and the moshcode files are never modified — if the mapping turns out to
+be wrong, the originals are still there.
 
 ## Where the data lives
 

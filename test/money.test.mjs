@@ -24,9 +24,13 @@ test("currencies with other minor units are handled without a table", () => {
   assert.equal(toMajor(1500, "JPY"), 1500);
 });
 
-test("an unknown currency code still produces a total", () => {
-  assert.equal(minorDigits("ZZZ"), 2);
-  assert.match(formatMoney(1000, "ZZZ"), /10\.00/);
+test("a code Intl does not know is treated as a ticker, not as broken fiat", () => {
+  // Anything off the fiat list is a quantity: 8 places so a satoshi survives,
+  // and no trailing zeros, because "0.10000000 BTC" hides the number in zeros.
+  assert.equal(minorDigits("ZZZ"), 8);
+  assert.equal(formatMoney(100000000, "ZZZ"), "1 ZZZ");
+  assert.equal(formatMoney(50000000, "SOL"), "0.5 SOL");
+  assert.equal(formatMoney(25000000000, "USDC"), "250 USDC");
 });
 
 test("rounding happens once per line, so the lines add up to the subtotal", () => {

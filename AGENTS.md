@@ -59,6 +59,31 @@ anything.
 billable as soon as the clock is stopped, so "nothing to bill" may just mean
 "the clock is still running".
 
+## Rates and agent-hours
+
+A rate is a parsed sentence, not a number:
+
+```sh
+billing rate set acme '$100/hour/agent/upto:4' --json
+billing rate show acme --json
+```
+
+```json
+{
+  "target": "acme", "minor": 10000, "currency": "USD", "per": "hour",
+  "unit": "agent", "cap": 4, "min": null, "amount": 100,
+  "text": "$100.00/hour/agent/upto:4",
+  "describes": "$100.00 per hour per agent, billing at most 4 agents"
+}
+```
+
+When `unit` is not `flat`, line items are billed in **agent-hours** (or
+seat-days, etc.) and `quantity * unitPrice` reproduces `amount` exactly. Each
+timer entry is charged with its own agent count before the units are summed, so
+a mixed day is never billed at a single averaged count.
+
+`timer` records the count: `timer start acme --agents 4`.
+
 ## Amounts
 
 `--json` reports money twice. The raw fields (`subtotal`, `tax`, `total`) are

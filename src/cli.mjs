@@ -4,13 +4,15 @@
 // because both nouns have the same verbs, and a flat vocabulary would need
 // `add-client` / `add-invoice` pairs that read worse from a slash command.
 import fs from "node:fs";
+import path from "node:path";
 
 import { GLOBAL_ALIASES, GLOBAL_BOOLEANS, GLOBAL_VALUES, parseArgs } from "./args.mjs";
 import { billingHome, dataFile, timerDataFile } from "./paths.mjs";
 import { read, update } from "./store.mjs";
 import { csv, emit, emitJson, paint, table, warn } from "./output.mjs";
 import { formatMoney, parseMoney, toMajor } from "./money.mjs";
-import { findClient, makeClient, normalizeHandle, normalizeProjects, projectsFor, resolve } from "./clients.mjs";
+import { PERIODS, UNITS, describeRate, formatRate, normalizeSettlement, parseRate, serializeRate } from "./rates.mjs";
+import { coerceRate, findClient, makeClient, normalizeHandle, normalizeProjects, projectsFor, resolve } from "./clients.mjs";
 import {
   STATUSES,
   billedEntryIds,
@@ -24,11 +26,12 @@ import {
   recompute,
   summarize,
 } from "./invoices.mjs";
-import { GROUP_KEYS, hoursOf, readTimesheet, selectBillable, toLineItems } from "./timesheet.mjs";
+import { GROUP_KEYS, hoursOf, readTimesheet, selectBillable, toLineItems, unitLabel } from "./timesheet.mjs";
 import { FORMATS, longDate, render } from "./render.mjs";
+import { moshcodeDir, planImport, planTimesheet, readMoshcode } from "./import-moshcode.mjs";
 import { parseMoment, resolveWindow } from "./time.mjs";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 export class UsageError extends Error {
   constructor(message) { super(message); this.name = "UsageError"; this.exitCode = 2; }
@@ -96,17 +99,20 @@ function gatherTimerItems(store, client, flags, { exceptInvoiceId = null } = {})
   const sheet = readTimesheet(timerFile);
   const { since, until } = resolveWindow(flags);
   const terms = resolve(client, store.business);
-  const currency = (flags.currency || terms.currency).toUpperCase();
   const projects = flags.project ? normalizeProjects(flags.project) : projectsFor(client);
 
-  const rateOverride = flags.rate != null ? parseMoney(flags.rate, currency) : null;
-  if (flags.rate != null && rateOverride == null) throw new UsageError(`--rate: "${flags.rate}" is not an amount`);
-  const fallbackRate = rateOverride ?? terms.rate;
-  if (fallbackRate == null) {
+  let rate = terms.rate;
+  if (flags.rate != null) {
+    try {
+      rate = coerceRate(flags.rate, (flags.currency || terms.currency).toUpperCase());
+    } catch (err) { throw new UsageError(`--rate: ${err.message}`); }
+  }
+  if (!rate) {
     throw new UsageError(
-      `no hourly rate for "${client.name}" — set one with: billing client set ${client.name} --rate 150`,
+      `no rate for "${client.name}" - set one with: billing rate set ${client.name} '$150/hour'`,
     );
   }
+  const currency = (flags.currency || rate.currency).toUpperCase();
 
   const picked = selectBillable(sheet.entries, {
     projects,
@@ -119,14 +125,28 @@ function gatherTimerItems(store, client, flags, { exceptInvoiceId = null } = {})
   const group = flags.group || "task";
   if (!GROUP_KEYS.includes(group)) throw new UsageError(`--group: unknown grouping "${group}" (${GROUP_KEYS.join(", ")})`);
 
-  const items = toLineItems(picked.entries, {
-    group,
-    // An entry's own rate wins over the client's: `timer start acme --rate 200`
-    // is how you record work that was agreed at a different price, and losing
-    // that here would quietly under- or over-bill it.
-    rateOf: (e) => (e.rate != null ? parseMoney(e.rate, currency) : fallbackRate),
-  });
-  return { items, picked, sheet, projects, currency, terms, timerFile };
+  // Entries carrying their own rate are priced and grouped separately. Folding
+  // them into the client rate would invent a blended number that appears
+  // nowhere in the record; `timer start acme --rate 200` is how you record work
+  // agreed at a different price, and it has to survive to the invoice.
+  const byRate = new Map();
+  for (const e of picked.entries) {
+    const key = e.rate == null ? "" : String(e.rate);
+    if (!byRate.has(key)) byRate.set(key, []);
+    byRate.get(key).push(e);
+  }
+
+  const items = [];
+  for (const [key, entries] of byRate) {
+    let entryRate = rate;
+    if (key) {
+      try { entryRate = coerceRate(key, currency); } catch { entryRate = rate; }
+    }
+    try {
+      items.push(...toLineItems(entries, { group, rate: entryRate }));
+    } catch (err) { throw new UsageError(err.message); }
+  }
+  return { items, picked, sheet, projects, currency, terms, rate, timerFile };
 }
 
 // ---------------------------------------------------------------------------
@@ -161,9 +181,9 @@ const COMMANDS = [
         }
         if (flags.currency != null) store.business.currency = String(flags.currency).toUpperCase();
         if (flags.rate != null) {
-          const rate = parseMoney(flags.rate, store.business.currency);
-          if (rate == null) throw new UsageError(`--rate: "${flags.rate}" is not an amount`);
-          store.business.rate = toMajor(rate, store.business.currency);
+          try {
+            store.business.rate = coerceRate(flags.rate, store.business.currency);
+          } catch (err) { throw new UsageError(`--rate: ${err.message}`); }
         }
         if (flags.tax != null) {
           const tax = Number(flags.tax);
@@ -184,7 +204,7 @@ const COMMANDS = [
       if (business.address) emit(paint("dim", business.address));
       emit("");
       emit(`currency  ${business.currency}`);
-      emit(`rate      ${business.rate == null ? paint("dim", "not set") : formatMoney(parseMoney(business.rate, business.currency), business.currency) + "/hour"}`);
+      emit(`rate      ${business.rate == null ? paint("dim", "not set") : describeRate(coerceRate(business.rate, business.currency))}`);
       emit(`tax       ${business.taxRate}%  (${business.taxLabel})`);
       emit(`terms     net ${business.terms} days`);
       emit(`numbering ${business.invoicePrefix || "(none)"}-0001`);
@@ -226,8 +246,8 @@ const COMMANDS = [
               name: c.name,
               displayName: c.displayName,
               email: c.email,
-              rate: terms.rate == null ? null : toMajor(terms.rate, terms.currency),
-              rateText: terms.rate == null ? "-" : formatMoney(terms.rate, terms.currency),
+              rate: serializeRate(terms.rate),
+              rateText: terms.rate == null ? "-" : formatRate(terms.rate),
               currency: terms.currency,
               terms: terms.terms,
               projects: projectsFor(c),
@@ -254,14 +274,14 @@ const COMMANDS = [
         const invoices = store.invoices.filter((i) => i.clientId === client.id);
         const money = summarize(invoices);
         if (flags.json) {
-          return emitJson({ client, resolved: { ...terms, rate: terms.rate == null ? null : toMajor(terms.rate, terms.currency) }, projects: projectsFor(client), summary: money });
+          return emitJson({ client, resolved: { ...terms, rate: serializeRate(terms.rate) }, projects: projectsFor(client), summary: money });
         }
         emit(paint("bold", client.displayName));
         emit(paint("dim", `handle ${client.name}`));
         if (client.email) emit(client.email);
         if (client.address) emit(paint("dim", client.address));
         emit("");
-        emit(`rate      ${terms.rate == null ? paint("dim", "not set") : `${formatMoney(terms.rate, terms.currency)}/hour`}`);
+        emit(`rate      ${terms.rate == null ? paint("dim", "not set") : describeRate(terms.rate)}`);
         emit(`terms     net ${terms.terms}`);
         emit(`tax       ${terms.taxRate}%`);
         emit(`projects  ${projectsFor(client).join(", ")}`);
@@ -276,12 +296,22 @@ const COMMANDS = [
         if (verb === "add") {
           if (!name) throw new UsageError("billing client add <name>");
           if (findClient(store, name)) throw new UsageError(`client "${normalizeHandle(name)}" already exists`);
+          // The rate is coerced against the currency this client will actually
+          // bill in, which is the business default unless --currency says
+          // otherwise. Defaulting it to USD here would price a JPY shop's
+          // clients in dollars without ever saying so.
+          const currency = String(flags.currency || store.business.currency || "USD").toUpperCase();
+          let rate = null;
+          if (flags.rate != null) {
+            try { rate = coerceRate(flags.rate, currency); }
+            catch (err) { throw new UsageError(`--rate: ${err.message}`); }
+          }
           const client = makeClient({
             name,
             displayName: flags.display || "",
             email: flags.email,
             address: flags.address,
-            rate: flags.rate,
+            rate,
             currency: flags.currency,
             taxRate: flags.tax,
             terms: flags.terms,
@@ -299,7 +329,12 @@ const COMMANDS = [
           if (flags.notes != null) client.notes = String(flags.notes);
           if (flags.currency != null) client.currency = String(flags.currency).toUpperCase();
           if (flags.project) client.projects = normalizeProjects(flags.project);
-          for (const [flag, key] of [["rate", "rate"], ["tax", "taxRate"], ["terms", "terms"]]) {
+          if (flags.rate != null) {
+            try {
+              client.rate = coerceRate(flags.rate, client.currency || store.business.currency || "USD");
+            } catch (err) { throw new UsageError(`--rate: ${err.message}`); }
+          }
+          for (const [flag, key] of [["tax", "taxRate"], ["terms", "terms"]]) {
             if (flags[flag] == null) continue;
             const value = Number(String(flags[flag]).replace(/[^\d.-]/g, ""));
             if (!Number.isFinite(value)) throw new UsageError(`--${flag}: "${flags[flag]}" is not a number`);
@@ -328,6 +363,106 @@ const COMMANDS = [
     },
   },
   {
+    name: "rate",
+    aliases: ["rates"],
+    args: "<set|list|show|rm> [client|default] [spec]",
+    summary: "what an hour of your time costs, in the words of the contract",
+    booleans: [],
+    values: ["client", "spec"],
+    multi: ["prefer", "accept"],
+    detail: [
+      "  billing rate set default '$150/hour'",
+      "  billing rate set acme '$100/hour/agent/upto:4'",
+      "  billing rate set beta '0.5 SOL/day' --prefer SOL --accept fiat",
+      "  billing rate set gamma '$5000/project'",
+      "",
+      "The spec is the contract sentence, parsed. A price, then any of a period",
+      `(${PERIODS.join(", ")}), a unit that gets multiplied`,
+      `(${UNITS.join(", ")}), upto:N to cap it, and min:N for a minimum.`,
+      "Order does not matter after the price.",
+      "",
+      "$100/hour/agent/upto:4 means four agents cost four hundred an hour, and",
+      "so do six. The settlement preference is separate from the price: the",
+      "number in the contract does not change because the rail did.",
+    ],
+    run({ positional, flags, file }) {
+      const verb = (positional[0] || "list").toLowerCase();
+      const VERBS = ["set", "list", "show", "rm"];
+      if (!VERBS.includes(verb)) throw new UsageError(`billing rate: unknown verb "${verb}" (${VERBS.join(", ")})`);
+
+      // `default` is a real target, not a client: a solo shop has one number
+      // everybody pays, and a per-client rate is what happens the first time
+      // somebody negotiates. Neither should require restating the other.
+      //
+      // `rate set '$150/hour'` with no target means default, which is what
+      // somebody setting their first rate types. A token that parses as a
+      // price is a spec, never a client name.
+      const rest = positional.slice(1);
+      const looksLikeSpec = (tok) => Boolean(tok) && /^[$€£¥]|^[0-9]|\//.test(tok);
+      const targetName = flags.client
+        || (looksLikeSpec(rest[0]) ? "default" : rest[0])
+        || "default";
+      const isDefault = ["default", "*", ""].includes(String(targetName).toLowerCase());
+      const specWords = flags.client || looksLikeSpec(rest[0]) ? rest : rest.slice(1);
+
+      if (verb === "list") {
+        const store = read(file);
+        const rows = [];
+        if (store.business.rate) {
+          rows.push({ target: "default", rate: coerceRate(store.business.rate, store.business.currency) });
+        }
+        for (const c of store.clients) {
+          if (c.rate) rows.push({ target: c.name, rate: coerceRate(c.rate, c.currency || store.business.currency) });
+        }
+        if (flags.json) return emitJson({ rates: rows.map((r) => ({ target: r.target, ...serializeRate(r.rate) })) });
+        if (!rows.length) { warn("no rates set - billing rate set default '$150/hour'"); return; }
+        emit(table(rows, [
+          { header: "TARGET", get: (r) => r.target },
+          { header: "RATE", get: (r) => formatRate(r.rate) },
+          { header: "READS AS", get: (r) => describeRate(r.rate) },
+        ]));
+        return;
+      }
+
+      if (verb === "show") {
+        const store = read(file);
+        const rate = isDefault
+          ? coerceRate(store.business.rate, store.business.currency)
+          : resolve(requireClient(store, targetName), store.business).rate;
+        if (!rate) throw new NotFoundError(`no rate for "${targetName}"`);
+        if (flags.json) return emitJson({ target: isDefault ? "default" : normalizeHandle(targetName), ...serializeRate(rate) });
+        emit(formatRate(rate));
+        emit(paint("dim", describeRate(rate)));
+        return;
+      }
+
+      const result = update((store) => {
+        if (verb === "rm") {
+          if (isDefault) { store.business.rate = null; return { target: "default", rate: null }; }
+          const client = requireClient(store, targetName);
+          client.rate = null;
+          return { target: client.name, rate: null };
+        }
+        const spec = flags.spec || specWords.join(" ");
+        if (!spec) throw new UsageError("billing rate set <client|default> '$100/hour/agent/upto:4'");
+        let rate;
+        try { rate = parseRate(spec); } catch (err) { throw new UsageError(err.message); }
+        rate.prefer = normalizeSettlement(flags.prefer || []);
+        rate.accept = normalizeSettlement(flags.accept || []);
+        if (isDefault) { store.business.rate = rate; return { target: "default", rate }; }
+        const client = requireClient(store, targetName);
+        client.rate = rate;
+        return { target: client.name, rate };
+      }, { file });
+
+      if (flags.json) return emitJson({ target: result.target, rate: serializeRate(result.rate) });
+      if (result.rate) {
+        emit(`${paint("green", "set")} ${result.target}  ${formatRate(result.rate)}`);
+        emit(paint("dim", describeRate(result.rate)));
+      } else emit(`${paint("red", "cleared")} ${result.target}`);
+    },
+  },
+  {
     name: "hours",
     aliases: ["unbilled"],
     args: "--client <name>",
@@ -344,9 +479,10 @@ const COMMANDS = [
     run({ positional, flags, file }) {
       const store = read(file);
       const client = requireClient(store, flags.client || positional[0]);
-      const { items, picked, sheet, projects, currency, timerFile } = gatherTimerItems(store, client, flags);
+      const { items, picked, sheet, projects, currency, rate, timerFile } = gatherTimerItems(store, client, flags);
       const subtotal = items.reduce((n, i) => n + Math.round(i.quantity * i.unitPrice), 0);
-      const totalHours = Math.round(items.reduce((n, i) => n + i.quantity, 0) * 100) / 100;
+      const totalHours = Math.round(items.reduce((n, i) => n + (i.hours ?? 0), 0) * 100) / 100;
+      const totalUnits = Math.round(items.reduce((n, i) => n + i.quantity, 0) * 100) / 100;
 
       if (flags.json) {
         return emitJson({
@@ -355,8 +491,11 @@ const COMMANDS = [
           currency,
           timerFile,
           timesheetFound: sheet.found,
+          rate: serializeRate(rate),
           items: items.map((i) => ({ ...i, unitPriceMajor: toMajor(i.unitPrice, currency), amount: toMajor(Math.round(i.quantity * i.unitPrice), currency) })),
           hours: totalHours,
+          units: totalUnits,
+          unit: unitLabel(rate),
           subtotal: toMajor(subtotal, currency),
           skipped: picked.skipped,
         });
@@ -365,12 +504,14 @@ const COMMANDS = [
       if (!items.length) { warn(`nothing unbilled for ${client.name} in that window`); return; }
       emit(table(items, [
         { header: "DESCRIPTION", get: (i) => i.description },
-        { header: "HOURS", get: (i) => i.quantity.toFixed(2), align: "right" },
+        { header: "HOURS", get: (i) => (i.hours ?? 0).toFixed(2), align: "right" },
+        { header: unitLabel(rate).toUpperCase(), get: (i) => i.quantity.toFixed(2), align: "right" },
         { header: "RATE", get: (i) => formatMoney(i.unitPrice, currency), align: "right" },
         { header: "AMOUNT", get: (i) => formatMoney(Math.round(i.quantity * i.unitPrice), currency), align: "right" },
       ]));
       emit("");
-      emit(`${totalHours.toFixed(2)}h unbilled  ${paint("bold", formatMoney(subtotal, currency))}`);
+      emit(`${totalHours.toFixed(2)}h tracked  ${totalUnits.toFixed(2)} ${unitLabel(rate)}  ${paint("bold", formatMoney(subtotal, currency))}`);
+      emit(paint("dim", describeRate(rate)));
       const { running, alreadyBilled, unbillable } = picked.skipped;
       const notes = [];
       if (running) notes.push(`${running} clock still running (not billable until stopped)`);
@@ -467,6 +608,92 @@ const COMMANDS = [
     },
   },
   {
+    name: "import",
+    args: "[--apply]",
+    summary: "bring across a ledger that started inside moshcode",
+    booleans: ["apply"],
+    values: ["from", "timer-data"],
+    detail: [
+      "Reads ~/.moshcode/business.json and ~/.moshcode/timers.json and writes",
+      "what it finds into this ledger and the timesheet.",
+      "",
+      "It shows the plan and writes nothing unless you pass --apply, because a",
+      "migration you cannot inspect first is one you have to undo. Nothing at",
+      "the source is deleted either way: if the mapping turns out to be wrong,",
+      "the originals are still there.",
+      "",
+      "Clients that already exist here are left alone rather than merged.",
+    ],
+    run({ flags, file }) {
+      const source = readMoshcode({ dir: flags.from || moshcodeDir() });
+      if (!source.found) {
+        if (flags.json) return emitJson({ found: false, dir: source.dir });
+        warn(`nothing to import - no business.json or timers.json under ${source.dir}`);
+        return;
+      }
+      const existing = read(file);
+      const plan = planImport(source, existing);
+
+      const timerFile = flags["timer-data"] || timerDataFile();
+      const sheet = readTimesheet(timerFile);
+      const sheetPlan = planTimesheet(source, new Set(sheet.entries.map((e) => e.id)));
+
+      if (!flags.apply) {
+        if (flags.json) {
+          return emitJson({
+            wouldImport: {
+              clients: plan.clients.map((c) => c.name),
+              invoices: plan.invoices.map((i) => i.number),
+              entries: sheetPlan.entries.length,
+            },
+            notes: plan.notes,
+            source: { dir: source.dir, timerFile },
+          });
+        }
+        emit(`from ${source.dir}`);
+        emit(`  clients   ${plan.clients.length}${plan.clients.length ? `  (${plan.clients.map((c) => c.name).join(", ")})` : ""}`);
+        emit(`  invoices  ${plan.invoices.length}`);
+        emit(`  entries   ${sheetPlan.entries.length} into ${timerFile}`);
+        for (const note of plan.notes) warn(`note: ${note}`);
+        emit("");
+        warn("nothing written - run again with --apply");
+        return;
+      }
+
+      update((store) => {
+        store.clients.push(...plan.clients);
+        store.invoices.push(...plan.invoices);
+        for (const inv of plan.invoices) {
+          const tail = /(\d+)\s*$/.exec(inv.number || "");
+          if (tail) store.counter = Math.max(store.counter, Number(tail[1]));
+        }
+        return store;
+      }, { file });
+
+      if (sheetPlan.entries.length) {
+        // Written through the same file the timer owns, appending rather than
+        // replacing: an import must not discard hours tracked since.
+        const merged = { version: 1, entries: [...sheet.entries, ...sheetPlan.entries] };
+        fs.mkdirSync(path.dirname(timerFile), { recursive: true });
+        fs.writeFileSync(timerFile, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+      }
+
+      if (flags.json) {
+        return emitJson({
+          imported: {
+            clients: plan.clients.map((c) => c.name),
+            invoices: plan.invoices.map((i) => i.number),
+            entries: sheetPlan.entries.length,
+          },
+          notes: plan.notes,
+        });
+      }
+      emit(`${paint("green", "imported")} ${plan.clients.length} clients, ${plan.invoices.length} invoices, ${sheetPlan.entries.length} entries`);
+      for (const note of plan.notes) warn(`note: ${note}`);
+      emit(paint("dim", `${source.dir} was not modified`));
+    },
+  },
+  {
     name: "config",
     aliases: ["where", "paths"],
     summary: "where the ledger and the timesheet live",
@@ -514,11 +741,14 @@ const INVOICE_HANDLERS = {
     const built = update((store) => {
       const client = requireClient(store, flags.client);
       const terms = resolve(client, store.business);
-      const currency = (flags.currency || terms.currency).toUpperCase();
+      let currency = (flags.currency || terms.currency).toUpperCase();
 
       const items = [];
       if (flags["from-timer"]) {
         const gathered = gatherTimerItems(store, client, flags);
+        // A rate carries its own currency and it wins: an invoice built from a
+        // rate priced in SOL is a SOL invoice, whatever the default says.
+        currency = gathered.currency;
         if (!gathered.sheet.found) {
           throw new NotFoundError(`no timesheet at ${gathered.timerFile} — nothing to bill`);
         }

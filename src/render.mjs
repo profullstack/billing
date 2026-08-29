@@ -23,7 +23,13 @@ export function longDate(iso) {
   return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-const qty = (n) => (Number.isInteger(n) ? String(n) : String(n));
+const qty = (n) => String(n);
+
+/** "1 agent-hour", "14 agent-hours" - a line item is read aloud, not parsed. */
+function unitFor(quantity, unit) {
+  if (!unit) return "";
+  return Number(quantity) === 1 ? unit.replace(/s$/, "") : unit;
+}
 
 /** Everything a rendered invoice needs, resolved once for all four formats. */
 export function model(invoice, { business, client, now = new Date() } = {}) {
@@ -50,6 +56,7 @@ export function model(invoice, { business, client, now = new Date() } = {}) {
       description: i.description,
       quantity: i.quantity,
       unit: i.unit,
+      unitText: unitFor(i.quantity, i.unit),
       unitPrice: i.unitPrice,
       unitPriceText: formatMoney(i.unitPrice, cur),
       amount: i.amount,
@@ -99,7 +106,7 @@ export function toMarkdown(m) {
   lines.push("");
   lines.push("| Description | Qty | Rate | Amount |", "| --- | ---: | ---: | ---: |");
   for (const i of m.items) {
-    lines.push(`| ${i.description.replace(/\|/g, "\\|")} | ${qty(i.quantity)}${i.unit ? ` ${i.unit}` : ""} | ${i.unitPriceText} | ${i.amountText} |`);
+    lines.push(`| ${i.description.replace(/\|/g, "\\|")} | ${qty(i.quantity)}${i.unitText ? ` ${i.unitText}` : ""} | ${i.unitPriceText} | ${i.amountText} |`);
   }
   lines.push("");
   lines.push(`**Subtotal:** ${m.subtotalText}`);
@@ -126,7 +133,7 @@ export function toText(m) {
   out.push(rule);
   const amountCol = Math.max(10, ...m.items.map((i) => i.amountText.length));
   for (const i of m.items) {
-    const meta = `${qty(i.quantity)}${i.unit ? ` ${i.unit}` : ""} @ ${i.unitPriceText}`;
+    const meta = `${qty(i.quantity)}${i.unitText ? ` ${i.unitText}` : ""} @ ${i.unitPriceText}`;
     out.push(i.description);
     out.push(`  ${meta.padEnd(width - amountCol - 2)}${i.amountText.padStart(amountCol)}`);
   }
@@ -157,7 +164,7 @@ export function toText(m) {
 export function toHtml(m) {
   const row = (i) => `      <tr>
         <td>${escapeHtml(i.description)}</td>
-        <td class="num">${escapeHtml(qty(i.quantity))}${i.unit ? ` ${escapeHtml(i.unit)}` : ""}</td>
+        <td class="num">${escapeHtml(qty(i.quantity))}${i.unitText ? ` ${escapeHtml(i.unitText)}` : ""}</td>
         <td class="num">${escapeHtml(i.unitPriceText)}</td>
         <td class="num">${escapeHtml(i.amountText)}</td>
       </tr>`;

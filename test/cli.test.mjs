@@ -37,7 +37,8 @@ test("client add, list, set and show", (t) => {
 
   json(["client", "set", "beta", "--rate", "225", "--project", "beta-api", "--project", "beta-web"], s);
   const shown = json(["client", "show", "beta"], s);
-  assert.equal(shown.data.resolved.rate, 225);
+  assert.equal(shown.data.resolved.rate.amount, 225, "a bare number is an hourly rate");
+  assert.equal(shown.data.resolved.rate.per, "hour");
   assert.deepEqual(shown.data.projects, ["beta-api", "beta-web"]);
 });
 
@@ -137,7 +138,7 @@ test("a dry run still validates, so it cannot preview an invoice that would be r
   cli(["client", "add", "norate"], s);
   const res = cli(["invoice", "new", "--client", "norate", "--from-timer", "--dry-run"], s);
   assert.equal(res.code, 2);
-  assert.match(res.stderr, /no hourly rate/);
+  assert.match(res.stderr, /no rate for/);
 });
 
 test("an entry's own rate beats the client rate", (t) => {
@@ -347,6 +348,8 @@ test("a currency without minor units is not multiplied by a hundred", (t) => {
   const s = scratch();
   t.after(s.cleanup);
   cli(["init", "--name", "Test Co", "--currency", "JPY"], s);
+  // No --currency on the client: the rate has to inherit the business default,
+  // or a JPY shop silently prices its clients in dollars.
   cli(["client", "add", "tokyo", "--rate", "15000"], s);
   const inv = json(["invoice", "new", "--client", "tokyo", "--item", "work|1|15000"], s).data.created;
   assert.equal(inv.currency, "JPY");

@@ -9,6 +9,7 @@ import fs from "node:fs";
 
 import { timerDataFile } from "./paths.mjs";
 import { localDay } from "./time.mjs";
+import { PERIOD_HOURS, chargeFor } from "./rates.mjs";
 
 /**
  * Load the timesheet. A missing one is not an error here: it means "no tracked
@@ -91,44 +92,74 @@ const LABEL = {
 export const GROUP_KEYS = Object.keys(LABEL);
 
 /**
- * Roll entries up into invoice line items.
+ * The unit a rate bills in, spelled for an invoice line.
  *
- * Rate is part of the grouping key, not just the label. Two entries on the
- * same task at different rates are two lines, because collapsing them would
- * mean inventing a blended rate that appears nowhere in the record and that
- * the client cannot check.
+ * "agent-hours" rather than "hours", because that is the arithmetic the client
+ * can check: 2 hours with 2 agents at $100/hour/agent is 4 agent-hours at $100,
+ * and printing it as "2 hours @ $100 = $400" invites a query we would deserve.
  */
-export function toLineItems(entries, {
-  group = "task",
-  defaultRate = 0,
-  rateOf = null,
-  now = new Date(),
-} = {}) {
+export function unitLabel(rate) {
+  if (!rate) return "hours";
+  const base = rate.per === "task" ? "tasks" : `${rate.per}s`;
+  return rate.unit && rate.unit !== "flat" ? `${rate.unit}-${base}` : base;
+}
+
+/**
+ * Roll entries up into invoice line items, priced by a rate.
+ *
+ * Each entry is charged on its own and the billable units are then summed,
+ * never the other way round: the agent count varies between entries, and
+ * averaging it would bill a two-agent afternoon at the four-agent rate.
+ *
+ * The quantity that comes out is in the rate's own billing units, so
+ * `quantity x unitPrice` reproduces the line amount exactly. That is the
+ * property that makes an invoice checkable by hand, and it is worth the one
+ * rounding it costs.
+ */
+export function toLineItems(entries, { group = "task", rate, now = new Date() } = {}) {
   const label = LABEL[group];
   if (!label) throw new Error(`unknown grouping "${group}" (${GROUP_KEYS.join(", ")})`);
+  if (!rate) throw new Error("line items need a rate");
+  if (rate.per === "project") {
+    throw new Error(
+      "a project fee is not a function of tracked time - invoice it with"
+      + " --item \"Project fee|1|<amount>\" and use the hours as evidence",
+    );
+  }
+
+  const perHours = PERIOD_HOURS[rate.per] ?? 1;
   const buckets = new Map();
   for (const e of entries) {
-    const rate = rateOf ? rateOf(e) : defaultRate;
+    const charge = chargeFor({ seconds: entrySeconds(e, now), agents: e.agents ?? 1 }, rate);
+    const units = rate.per === "task"
+      ? charge.units
+      : (charge.billedHours / perHours) * charge.units;
     const text = label(e);
-    const key = `${text} ${rate}`;
-    const bucket = buckets.get(key)
-      || { description: text, unitPrice: rate, seconds: 0, timerIds: [], earliest: e.start };
+    const bucket = buckets.get(text)
+      || { description: text, units: 0, seconds: 0, agents: 1, timerIds: [], earliest: e.start };
+    bucket.units += units;
     bucket.seconds += entrySeconds(e, now);
+    bucket.agents = Math.max(bucket.agents, e.agents ?? 1);
     bucket.timerIds.push(e.id);
     if (e.start < bucket.earliest) bucket.earliest = e.start;
-    buckets.set(key, bucket);
+    buckets.set(text, bucket);
   }
+
   const rows = [...buckets.values()];
   // Chronological, so an invoice reads as the story of the period rather than
   // a ranking. `day` groupings need this and the others benefit from it.
   rows.sort((a, b) => (a.earliest < b.earliest ? -1
     : a.earliest > b.earliest ? 1
     : a.description.localeCompare(b.description)));
+
+  const unit = unitLabel(rate);
   return rows.map((b) => ({
     description: b.description,
-    quantity: hoursOf(b.seconds),
-    unit: "hours",
-    unitPrice: b.unitPrice,
+    quantity: Math.round(b.units * 100) / 100,
+    unit,
+    unitPrice: rate.minor,
+    hours: hoursOf(b.seconds),
+    agents: b.agents,
     timerIds: b.timerIds,
   }));
 }
