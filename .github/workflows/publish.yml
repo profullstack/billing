@@ -1,0 +1,121 @@
+# Publish the release to npm.
+#
+# The release is the trigger, so there is no separate step to forget: a channel
+# that only updates when somebody remembers is a channel that silently serves an
+# old version forever. `workflow_dispatch` is for re-running one that failed on
+# something transient, and is safe because a version already on the registry is
+# skipped rather than attempted.
+#
+# Authenticates with an npm automation token in the repository secret
+# `NPM_TOKEN`. The token is also in the logicsrc vault `billing--prod`, which is
+# the system of record — it expires 2026-10-29, and when it does this workflow
+# fails with a credential error rather than a packaging one.
+#
+# The trap worth knowing: `registry-url` is what makes setup-node write
+#
+#   //registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}
+#
+# which is how the token reaches npm. It is required for token auth and fatal
+# under trusted publishing (OIDC), where it resolves to an empty credential that
+# stops npm attempting the exchange. Delete it first if this ever moves to OIDC.
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Needed even with token auth: provenance is signed with a short-lived OIDC
+  # token, and `--provenance` fails without it.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # No install step: this package has no dependencies, which is also why
+      # there is no lockfile to restore.
+      - run: node --test
+        env:
+          CI: true
+
+      - name: Read the version being published
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "@profullstack/billing@$VERSION"
+
+      # A release tagged v0.3.0 carrying package.json 0.2.0 would publish the
+      # wrong tree under a version nobody can reuse. Cheap to check, impossible
+      # to undo.
+      - name: Check the tag matches package.json
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::release tag $TAG does not match package.json version $VERSION"
+            exit 1
+          fi
+
+      # Makes a re-run harmless. Without it, dispatching twice fails the second
+      # time on an E403 that reads like something broke.
+      - name: Skip if this version is already on npm
+        id: published
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if npm view "@profullstack/billing@$VERSION" version >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "@profullstack/billing@$VERSION is already published — nothing to do"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Said plainly here, rather than as the E404 npm otherwise returns partway
+      # through — an error that reads as "the package does not exist" rather
+      # than "there is no credential".
+      - name: Require an npm token
+        if: steps.published.outputs.already == 'false'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN is not set — add an npm automation token as a repository secret named NPM_TOKEN (logicsrc vault billing--prod has it)"
+            exit 1
+          fi
+
+      - name: Publish
+        if: steps.published.outputs.already == 'false'
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Confirm the registry has it
+        if: steps.published.outputs.already == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The registry is read-through cached, so a fresh publish can 404 for
+          # a moment. Retry rather than report a good publish as a failure.
+          for _ in 1 2 3 4 5; do
+            if [ "$(npm view "@profullstack/billing@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+              echo "@profullstack/billing@$VERSION is on the registry"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::published, but the registry does not report @profullstack/billing@$VERSION yet"
+          exit 1
