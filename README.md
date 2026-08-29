@@ -86,6 +86,32 @@ blended rate that appears nowhere in the record and that the client cannot
 check. An entry's own rate (`timer start acme --rate 200`) always beats the
 client's.
 
+## Clients
+
+Contact details are written the way they arrive:
+
+```sh
+billing client add "Acme Inc", https://acme.com, +1-555-0100
+billing client add acme --contact.telephone +1-555-0100 --contact.name Jane
+billing client payee acme solana:9xQe...
+```
+
+The comma form is what you paste out of a signature: the first segment is the
+name and the rest are recognised **by shape, in any order**, because nobody's
+signature comes in a fixed one. A segment nothing recognises is kept as a note
+rather than dropped.
+
+Any dotted flag sets that path. `--billing.po` works because it says what it
+means — there is no field list to be missing from, so a record grows the fields
+your business actually keeps. Setting one path merges; it never drops the
+others. (An *undotted* unknown flag is still an error, so a typo is a typo.)
+
+`payee` is where a client's payments land. It is recorded, never guessed: a bare
+address with no `chain:` prefix and no `--chain` is filed as `unknown` rather
+than assumed, and `client payee acme` with no address is refused rather than
+clearing the one that is there. `invoice render --format json` carries it, which
+is how an outside payment rail asks where to settle.
+
 ## Rates
 
 A rate is the sentence from the contract, parsed:

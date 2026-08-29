@@ -1,6 +1,6 @@
 {
   "name": "@profullstack/billing",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Clients, rates and invoices from the terminal — turns tracked hours into an invoice you can send, for people and for agents.",
   "keywords": ["billing", "invoice", "invoicing", "clients", "freelance", "cli", "agent", "timesheet"],

@@ -4,7 +4,7 @@
 // declared as taking a value. Guessing from the shape of the next token is
 // what makes `timer log --json acme` mean two different things on two
 // different days, and this tool is meant to be scripted by agents.
-export function parseArgs(argv, { booleans = [], values = [], multi = [], aliases = {} } = {}) {
+export function parseArgs(argv, { booleans = [], values = [], multi = [], aliases = {}, dotted = false } = {}) {
   const isBool = new Set(booleans);
   const takesValue = new Set([...values, ...multi]);
   const isMulti = new Set(multi);
@@ -12,6 +12,10 @@ export function parseArgs(argv, { booleans = [], values = [], multi = [], aliase
   const positional = [];
   const rest = [];
   const unknown = [];
+  // `--contact.telephone +1-555` under `dotted`: a flag naming a path is a
+  // field, not a typo. Collected in order so the last write to a path wins,
+  // the same as repeating any other flag.
+  const fields = [];
 
   const resolve = (name) => aliases[name] || name;
   const set = (name, value) => {
@@ -51,6 +55,12 @@ export function parseArgs(argv, { booleans = [], values = [], multi = [], aliase
         set(name, value);
         continue;
       }
+      if (dotted && body.includes(".")) {
+        const value = inline != null ? inline : argv[++i];
+        if (value === undefined) throw new Error(`--${body} needs a value`);
+        fields.push([body, value]);
+        continue;
+      }
       unknown.push(`--${body}`);
       continue;
     }
@@ -74,7 +84,7 @@ export function parseArgs(argv, { booleans = [], values = [], multi = [], aliase
     }
     positional.push(token);
   }
-  return { flags, positional, rest, unknown };
+  return { flags, positional, rest, unknown, fields };
 }
 
 /** Flags every command answers to, so they are declared once. */

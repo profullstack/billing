@@ -120,3 +120,37 @@ test("the invoice counter advances past imported numbers", (t) => {
   const next = json(["invoice", "new", "--client", "acme", "--item", "work|1|100"], s).data.created;
   assert.equal(next.number, "INV-0008", "an imported number is never reissued");
 });
+
+test("a moshcode client arrives with its freeform fields and payee intact", (t) => {
+  const s = scratch();
+  t.after(s.cleanup);
+  // The whole reason src/fields.mjs exists: a record written with --billing.po
+  // has to arrive with billing.po still on it, or the migration loses work.
+  const home = moshcode(s.dir, {
+    clients: {
+      "acme-inc": {
+        id: "acme-inc",
+        name: "Acme Inc",
+        url: "https://acme.com",
+        phone: "+1-555-0100",
+        contact: { telephone: "+1-555-0200", name: "Jane" },
+        billing: { po: "PO-42" },
+        payee: { chain: "solana", address: "9xQeAbc" },
+        createdAt: "2026-08-01T00:00:00.000Z",
+      },
+    },
+    entries: [],
+  });
+  cli(["import", "--from", home, "--timer-data", s.timer, "--apply"], s);
+
+  const client = json(["client", "show", "acme-inc"], s).data.client;
+  assert.equal(client.displayName, "Acme Inc");
+  assert.deepEqual(client.payee, { chain: "solana", address: "9xQeAbc" });
+  assert.equal(client.fields.url, "https://acme.com");
+  assert.equal(client.fields.phone, "+1-555-0100");
+  assert.equal(client.fields.contact.telephone, "+1-555-0200");
+  assert.equal(client.fields.billing.po, "PO-42");
+  // The columns this model does have are not duplicated into fields.
+  assert.equal(client.fields.name, undefined);
+  assert.equal(client.fields.createdAt, undefined);
+});

@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { coerceRate, makeClient, normalizeProjects } from "./clients.mjs";
+import { parsePayee } from "./fields.mjs";
 import { makeInvoice } from "./invoices.mjs";
 import { fromMajor } from "./money.mjs";
 
@@ -81,6 +82,17 @@ export function planImport(source, existing) {
     } catch {
       notes.push(`client "${name}" had a rate this version cannot read - import it by hand`);
     }
+    // Everything moshcode kept that has no column here travels as-is. That is
+    // the point of `fields`: a record written with --billing.po arrives with
+    // billing.po still on it, so the migration is not the place work is lost.
+    const KNOWN = new Set([
+      "id", "name", "display", "email", "address", "currency", "projects",
+      "notes", "payee", "rate", "createdAt", "updatedAt",
+    ]);
+    const carried = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (!KNOWN.has(key)) carried[key] = value;
+    }
     const client = makeClient({
       name,
       displayName: raw.display || raw.name || String(name),
@@ -90,6 +102,8 @@ export function planImport(source, existing) {
       currency: raw.currency || null,
       projects: normalizeProjects(raw.projects || []),
       notes: raw.notes || "",
+      fields: carried,
+      payee: raw.payee ? parsePayee(`${raw.payee.chain}:${raw.payee.address}`) : null,
     });
     byOldId.set(id, client);
     clients.push(client);

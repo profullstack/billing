@@ -12,6 +12,7 @@ import { read, update } from "./store.mjs";
 import { csv, emit, emitJson, paint, table, warn } from "./output.mjs";
 import { formatMoney, parseMoney, toMajor } from "./money.mjs";
 import { PERIODS, UNITS, describeRate, formatRate, normalizeSettlement, parseRate, serializeRate } from "./rates.mjs";
+import { flatten, formatPayee, parseCommaForm, parsePayee, setPath } from "./fields.mjs";
 import { coerceRate, findClient, makeClient, normalizeHandle, normalizeProjects, projectsFor, resolve } from "./clients.mjs";
 import {
   STATUSES,
@@ -31,7 +32,7 @@ import { FORMATS, longDate, render } from "./render.mjs";
 import { moshcodeDir, planImport, planTimesheet, readMoshcode } from "./import-moshcode.mjs";
 import { parseMoment, resolveWindow } from "./time.mjs";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 export class UsageError extends Error {
   constructor(message) { super(message); this.name = "UsageError"; this.exitCode = 2; }
@@ -151,7 +152,7 @@ function gatherTimerItems(store, client, flags, { exceptInvoiceId = null } = {})
 
 // ---------------------------------------------------------------------------
 
-const CLIENT_VERBS = ["add", "list", "show", "set", "rm", "archive", "unarchive"];
+const CLIENT_VERBS = ["add", "list", "show", "set", "rm", "archive", "unarchive", "payee"];
 const INVOICE_VERBS = ["new", "list", "show", "render", "mark", "edit", "rm"];
 
 const COMMANDS = [
@@ -220,21 +221,45 @@ const COMMANDS = [
     args: `<${CLIENT_VERBS.join("|")}> [name]`,
     summary: "who you bill, and on what terms",
     booleans: ["archived"],
-    values: ["display", "email", "address", "rate", "currency", "tax", "terms", "notes", "name"],
+    values: ["display", "email", "address", "rate", "currency", "tax", "terms", "notes", "name", "payee", "chain"],
     multi: ["project"],
+    dotted: true,
     detail: [
       "  billing client add acme --display 'Acme Corp' --rate 150 --email ap@acme.com",
+      "  billing client add \"Acme Inc\", https://acme.com, +1-555-0100",
+      "  billing client add acme --contact.telephone +1-555-0100 --contact.name Jane",
+      "  billing client payee acme solana:9xQe...",
       "  billing client set acme --rate 175 --project acme-api",
-      "  billing client list",
+      "",
+      "Contact details are written the way they arrive. The comma form is what",
+      "you paste out of a signature: the first segment is the name and the rest",
+      "are recognised by shape, in any order. Any dotted flag sets that path, so",
+      "--billing.po works because it says what it means - there is no field list",
+      "to be missing from.",
       "",
       "A client bills the timer projects named by --project. With none given it",
       "bills the project matching its own handle, so `timer start acme` and",
       "`billing client add acme` line up with nothing to configure.",
     ],
-    run({ positional, flags, file }) {
+    run({ positional, flags, fields = [], file }) {
       const verb = (positional[0] || "list").toLowerCase();
       if (!CLIENT_VERBS.includes(verb)) throw new UsageError(`billing client: unknown verb "${verb}" (${CLIENT_VERBS.join(", ")})`);
-      const name = flags.name || positional[1];
+      // Everything after the verb, rejoined, so the comma form survives a shell
+      // that split it into three arguments.
+      const tail = positional.slice(1).join(" ");
+      const commas = tail.includes(",") ? parseCommaForm(tail) : {};
+      const name = flags.name || commas.name || positional[1];
+
+      /** The dotted flags, plus whatever the comma form recognised. */
+      const fieldsFrom = (base = {}) => {
+        const out = JSON.parse(JSON.stringify(base));
+        for (const [key, value] of Object.entries(commas)) {
+          if (key === "name") continue;
+          setPath(out, key, value);
+        }
+        for (const [path, value] of fields) setPath(out, path, value);
+        return out;
+      };
 
       if (verb === "list") {
         const store = read(file);
@@ -251,6 +276,8 @@ const COMMANDS = [
               currency: terms.currency,
               terms: terms.terms,
               projects: projectsFor(c),
+              payee: c.payee || null,
+              fields: c.fields || {},
               archived: c.archived,
             };
           });
@@ -262,6 +289,7 @@ const COMMANDS = [
           { header: "RATE", get: (r) => r.rateText, align: "right" },
           { header: "TERMS", get: (r) => `net ${r.terms}` },
           { header: "PROJECTS", get: (r) => r.projects.join(",") },
+          { header: "PAYEE", get: (r) => (r.payee ? formatPayee(r.payee) : "-") },
           { header: "", get: (r) => (r.archived ? "archived" : "") },
         ]));
         return;
@@ -285,9 +313,37 @@ const COMMANDS = [
         emit(`terms     net ${terms.terms}`);
         emit(`tax       ${terms.taxRate}%`);
         emit(`projects  ${projectsFor(client).join(", ")}`);
+        emit(`payee     ${client.payee ? formatPayee(client.payee) : paint("dim", "not set - billing client payee " + client.name + " <chain:address>")}`);
+        const leaves = flatten(client.fields || {});
+        if (leaves.length) {
+          emit("");
+          // Width from the paths present, not a fixed 9: `billing.po` is
+          // wider than `rate` and a fixed column runs the value into the key.
+          const width = Math.max(9, ...leaves.map(([path]) => path.length));
+          for (const [path, value] of leaves) emit(`${path.padEnd(width)} ${value}`);
+        }
         emit("");
         emit(`invoices  ${invoices.length}   outstanding ${formatMoney(money.outstanding, terms.currency)}`
           + (money.overdue ? paint("red", `   overdue ${formatMoney(money.overdue, terms.currency)}`) : ""));
+        return;
+      }
+
+      if (verb === "payee") {
+        const address = flags.payee || positional[2];
+        const updated = update((store) => {
+          const client = requireClient(store, name);
+          if (!address) {
+            // Refusing beats clearing: `client payee acme` with a typo'd
+            // address would otherwise silently unset where money goes.
+            throw new UsageError(`billing client payee ${client.name} <chain:address>`);
+          }
+          const payee = parsePayee(address, flags.chain);
+          if (!payee) throw new UsageError(`cannot read "${address}" as an address`);
+          client.payee = payee;
+          return client;
+        }, { file });
+        if (flags.json) return emitJson({ payee: updated });
+        emit(`${paint("green", "payee")} ${updated.name}  ${formatPayee(updated.payee)}`);
         return;
       }
 
@@ -309,14 +365,18 @@ const COMMANDS = [
           const client = makeClient({
             name,
             displayName: flags.display || "",
-            email: flags.email,
+            // The comma form fills in what it recognised by shape; an explicit
+            // flag always wins over it.
+            email: flags.email ?? commas.email,
             address: flags.address,
             rate,
             currency: flags.currency,
             taxRate: flags.tax,
             terms: flags.terms,
             projects: flags.project || [],
-            notes: flags.notes,
+            notes: flags.notes ?? commas.note,
+            fields: fieldsFrom(),
+            payee: flags.payee ? parsePayee(flags.payee, flags.chain) : null,
           });
           store.clients.push(client);
           return { verb, client };
@@ -329,6 +389,12 @@ const COMMANDS = [
           if (flags.notes != null) client.notes = String(flags.notes);
           if (flags.currency != null) client.currency = String(flags.currency).toUpperCase();
           if (flags.project) client.projects = normalizeProjects(flags.project);
+          if (flags.payee != null) client.payee = parsePayee(flags.payee, flags.chain);
+          // Merged onto what is there, not replacing it: setting one path must
+          // not drop every other field somebody recorded.
+          if (fields.length || Object.keys(commas).length > 1) {
+            client.fields = fieldsFrom(client.fields || {});
+          }
           if (flags.rate != null) {
             try {
               client.rate = coerceRate(flags.rate, client.currency || store.business.currency || "USD");
@@ -1090,6 +1156,7 @@ export function run(argv) {
     values: [...GLOBAL_VALUES, ...(cmd.values || [])],
     multi: cmd.multi || [],
     aliases: GLOBAL_ALIASES,
+    dotted: Boolean(cmd.dotted),
   });
   if (parsed.flags.help) { emit(commandHelp(cmd)); return 0; }
   if (parsed.unknown.length) {
@@ -1099,7 +1166,7 @@ export function run(argv) {
   delete flags.help;
   delete flags.version;
   const file = flags.data || dataFile();
-  cmd.run({ positional: parsed.positional, flags, rest: parsed.rest, file });
+  cmd.run({ positional: parsed.positional, flags, rest: parsed.rest, fields: parsed.fields, file });
   return 0;
 }
 
