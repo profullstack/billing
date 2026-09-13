@@ -1,17 +1,41 @@
 {
   "name": "@profullstack/billing",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Clients, rates and invoices from the terminal — turns tracked hours into an invoice you can send, for people and for agents.",
-  "keywords": ["billing", "invoice", "invoicing", "clients", "freelance", "cli", "agent", "timesheet"],
-  "repository": { "type": "git", "url": "git+https://github.com/profullstack/billing.git" },
+  "keywords": [
+    "billing",
+    "invoice",
+    "invoicing",
+    "clients",
+    "freelance",
+    "cli",
+    "agent",
+    "timesheet"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/profullstack/billing.git"
+  },
   "homepage": "https://github.com/profullstack/billing#readme",
-  "bugs": { "url": "https://github.com/profullstack/billing/issues" },
+  "bugs": {
+    "url": "https://github.com/profullstack/billing/issues"
+  },
   "license": "MIT",
   "author": "Profullstack, LLC",
-  "bin": { "billing": "bin/billing.mjs" },
-  "files": ["bin", "src", "README.md", "AGENTS.md", "LICENSE"],
-  "engines": { "node": ">=20.11" },
+  "bin": {
+    "billing": "bin/billing.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
   "scripts": {
     "test": "node --test",
     "start": "node bin/billing.mjs"

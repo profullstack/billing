@@ -437,8 +437,8 @@ const COMMANDS = [
     values: ["client", "spec"],
     multi: ["prefer", "accept"],
     detail: [
-      "  billing rate set default '$150/hour'",
-      "  billing rate set acme '$100/hour/agent/upto:4'",
+      "  billing rate set default '$400/hour/agent'",
+      "  billing rate set acme '$400/hour/agent/upto:4'",
       "  billing rate set beta '0.5 SOL/day' --prefer SOL --accept fiat",
       "  billing rate set gamma '$5000/project'",
       "",
@@ -447,7 +447,7 @@ const COMMANDS = [
       `(${UNITS.join(", ")}), upto:N to cap it, and min:N for a minimum.`,
       "Order does not matter after the price.",
       "",
-      "$100/hour/agent/upto:4 means four agents cost four hundred an hour, and",
+      "$400/hour/agent/upto:4 means four agents cost sixteen hundred an hour, and",
       "so do six. The settlement preference is separate from the price: the",
       "number in the contract does not change because the rail did.",
     ],
@@ -481,7 +481,7 @@ const COMMANDS = [
           if (c.rate) rows.push({ target: c.name, rate: coerceRate(c.rate, c.currency || store.business.currency) });
         }
         if (flags.json) return emitJson({ rates: rows.map((r) => ({ target: r.target, ...serializeRate(r.rate) })) });
-        if (!rows.length) { warn("no rates set - billing rate set default '$150/hour'"); return; }
+        if (!rows.length) { warn("no rates set - billing rate set default '$400/hour/agent'"); return; }
         emit(table(rows, [
           { header: "TARGET", get: (r) => r.target },
           { header: "RATE", get: (r) => formatRate(r.rate) },
@@ -510,7 +510,7 @@ const COMMANDS = [
           return { target: client.name, rate: null };
         }
         const spec = flags.spec || specWords.join(" ");
-        if (!spec) throw new UsageError("billing rate set <client|default> '$100/hour/agent/upto:4'");
+        if (!spec) throw new UsageError("billing rate set <client|default> '$400/hour/agent/upto:4'");
         let rate;
         try { rate = parseRate(spec); } catch (err) { throw new UsageError(err.message); }
         rate.prefer = normalizeSettlement(flags.prefer || []);

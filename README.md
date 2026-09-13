@@ -19,7 +19,7 @@ Node 20.11 or newer. No runtime dependencies.
 ```sh
 billing init --name "Your Company" --email you@example.com --terms 14
 billing client add acme --display "Acme Corp" --email ap@acme.com
-billing rate set acme '$100/hour/agent/upto:4' 
+billing rate set acme '$400/hour/agent/upto:4'
 
 timer start acme fix the login redirect     # ... work happens ...
 timer stop
@@ -117,15 +117,15 @@ is how an outside payment rail asks where to settle.
 A rate is the sentence from the contract, parsed:
 
 ```sh
-billing rate set default '$150/hour'
-billing rate set acme    '$100/hour/agent/upto:4'
+billing rate set default '$400/hour/agent'
+billing rate set acme    '$400/hour/agent/upto:4'
 billing rate set beta    '0.5 SOL/day' --prefer SOL --accept fiat
 billing rate set gamma   '$5000/project'
 ```
 
 One line carrying four decisions: the price, the period it is charged for, the
 thing that gets multiplied, and the point past which you stop charging.
-`$100/hour/agent/upto:4` means four agents cost four hundred an hour, and so do
+`$400/hour/agent/upto:4` means four agents cost sixteen hundred an hour, and so do
 six. Order does not matter after the price, because nobody remembers an order
 they were never told.
 
@@ -142,7 +142,7 @@ When a rate is priced per agent, the invoice bills **agent-hours**, because that
 is arithmetic a client can check:
 
 ```
-auth refactor    14 agent-hours @ $100.00    $1,400.00
+auth refactor    14 agent-hours @ $400.00    $5,600.00
 ```
 
 Three hours with two agents plus two hours with six (capped at four) is 14

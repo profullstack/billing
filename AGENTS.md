@@ -64,16 +64,16 @@ billable as soon as the clock is stopped, so "nothing to bill" may just mean
 A rate is a parsed sentence, not a number:
 
 ```sh
-billing rate set acme '$100/hour/agent/upto:4' --json
+billing rate set acme '$400/hour/agent/upto:4' --json
 billing rate show acme --json
 ```
 
 ```json
 {
-  "target": "acme", "minor": 10000, "currency": "USD", "per": "hour",
-  "unit": "agent", "cap": 4, "min": null, "amount": 100,
-  "text": "$100.00/hour/agent/upto:4",
-  "describes": "$100.00 per hour per agent, billing at most 4 agents"
+  "target": "acme", "minor": 40000, "currency": "USD", "per": "hour",
+  "unit": "agent", "cap": 4, "min": null, "amount": 400,
+  "text": "$400.00/hour/agent/upto:4",
+  "describes": "$400.00 per hour per agent, billing at most 4 agents"
 }
 ```
 
