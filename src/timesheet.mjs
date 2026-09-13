@@ -95,7 +95,7 @@ export const GROUP_KEYS = Object.keys(LABEL);
  * The unit a rate bills in, spelled for an invoice line.
  *
  * "agent-hours" rather than "hours", because that is the arithmetic the client
- * can check: 2 hours with 2 agents at $100/hour/agent is 4 agent-hours at $100,
+ * can check: 2 hours with 2 agents at $400/hour/agent is 4 agent-hours at $100,
  * and printing it as "2 hours @ $100 = $400" invites a query we would deserve.
  */
 export function unitLabel(rate) {

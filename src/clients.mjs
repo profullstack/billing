@@ -81,7 +81,7 @@ export function projectsFor(client) {
 /**
  * Read a rate however it was written.
  *
- * Three spellings reach this: a full sentence ("$100/hour/agent/upto:4"), a
+ * Three spellings reach this: a full sentence ("$400/hour/agent/upto:4"), a
  * bare number from `--rate 150`, and an already-parsed object read back off
  * disk. A bare number is an hourly rate in the client's currency, which is what
  * somebody typing `--rate 150` means every time.

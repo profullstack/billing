@@ -1,6 +1,6 @@
 // What an hour of agent time costs, written the way people say it out loud.
 //
-//   billing rate set acme '$100/hour/agent/upto:4'
+//   billing rate set acme '$400/hour/agent/upto:4'
 //
 // One line carrying four decisions: the price, the period it is charged for,
 // the thing that is multiplied (an agent, a seat, a person), and the point past
@@ -31,15 +31,15 @@ const SETTLEMENT_WORDS = new Set(["fiat", "crypto", "stablecoin", "any", "cash"]
  *
  * The grammar is positional only in its first segment (the price); everything
  * after it is recognised by what it says rather than where it sits, so
- * `$100/agent/hour` and `$100/hour/agent` mean the same thing. People do not
+ * `$400/agent/hour` and `$400/hour/agent` mean the same thing. People do not
  * remember an order they were never told.
  */
 export function parseRate(spec) {
   const text = String(spec ?? "").trim();
-  if (!text) throw new Error("a rate looks like $100/hour/agent/upto:4");
+  if (!text) throw new Error("a rate looks like $400/hour/agent/upto:4");
   const parts = text.split("/").map((p) => p.trim()).filter(Boolean);
   const price = parsePrice(parts.shift());
-  if (!price) throw new Error(`can't read a price out of ${JSON.stringify(text)} - try $100/hour/agent`);
+  if (!price) throw new Error(`can't read a price out of ${JSON.stringify(text)} - try $400/hour/agent`);
 
   const rate = {
     minor: price.minor, currency: price.currency,
@@ -81,7 +81,7 @@ export function parseRate(spec) {
   // would silently multiply the invoice by every hour tracked.
   if (!sawPeriod && rate.unit === "flat" && rate.cap === null) rate.per = "hour";
   if (rate.cap !== null && rate.unit === "flat") {
-    throw new Error("upto: caps a unit, so say what it caps - $100/hour/agent/upto:4");
+    throw new Error("upto: caps a unit, so say what it caps - $400/hour/agent/upto:4");
   }
   return rate;
 }
