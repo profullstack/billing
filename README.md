@@ -9,6 +9,14 @@ inbox. Every command also speaks `--json`, so an agent can prepare an invoice
 and hand it to you to send.
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/profullstack/billing/main/install.sh | sh
+```
+
+No root needed: it installs under `~/.local` (fetching a private Node if yours is too old). Run it again to update; remove with `sh ~/.local/share/billing/uninstall.sh`.
+
+Or with npm:
+
+```sh
 npm install -g @profullstack/billing
 ```
 
